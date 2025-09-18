@@ -249,6 +249,22 @@ add_readme_custom_local_sigma_repo_template:
     - context:
         repo_type: "sigma"
 
+create_custom_local_playbooks_repo_template:
+  git.present:
+    - name: /nsm/rules/custom-local-repos/local-playbooks
+    - bare: False
+    - force: True
+
+add_readme_custom_local_playbooks_repo_template:
+  file.managed:
+    - name: /nsm/rules/custom-local-repos/local-playbooks/README
+    - source: salt://soc/files/soc/detections_custom_repo_template_readme.jinja
+    - user: 939
+    - group: 939
+    - template: jinja
+    - context:
+        repo_type: "playbooks"
+
 socore_own_custom_repos:
   file.directory:
     - name: /nsm/rules/custom-local-repos/
