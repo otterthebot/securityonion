@@ -1487,10 +1487,14 @@ soc:
               - repo: https://github.com/Security-Onion-Solutions/securityonion-resources-playbooks
                 branch: main
                 folder: securityonion-normalized
+              - repo: file:///nsm/rules/custom-local-repos/local-playbooks
+                branch: main
             airgap:
               - repo: file:///nsm/airgap-resources/playbooks/securityonion-resources-playbooks
                 branch: main
                 folder: securityonion-normalized
+              - repo: file:///nsm/rules/custom-local-repos/local-playbooks
+                branch: main
         assistant:
           apiUrl: https://onionai.securityonion.net
         salt:
