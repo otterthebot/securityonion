@@ -52,7 +52,7 @@ check_err() {
       ;;
       28)
         echo 'No space left on device'
-        echo "Likely ran out of space on disk, please review hardware requirements for Security Onion: $DOC_BASE_URL/hardware.html"
+        echo "Likely ran out of space on disk, please review hardware requirements for Security Onion: $DOC_BASE_URL/hardware"
       ;;
       30)
         echo 'Read-only file system'
@@ -701,6 +701,21 @@ post_to_2.4.210() {
   echo "Regenerating Elastic Agent Installers"
   /sbin/so-elastic-agent-gen-installers
 
+  # migrate elasticsearch:managed_integrations pillar to manager:managed_integrations
+  if managed_integrations=$(/usr/sbin/so-yaml.py get /opt/so/saltstack/local/pillar/elasticsearch/soc_elasticsearch.sls elasticsearch.managed_integrations 2>/dev/null); then
+    local managed_integrations_old_pillar="/tmp/elasticsearch-managed_integrations.yaml"
+
+    echo "Migrating managed_integrations pillar"
+    echo -e "$managed_integrations" > "$managed_integrations_old_pillar"
+
+    /usr/sbin/so-yaml.py add /opt/so/saltstack/local/pillar/manager/soc_manager.sls manager.managed_integrations file:$managed_integrations_old_pillar > /dev/null 2>&1
+
+    /usr/sbin/so-yaml.py remove /opt/so/saltstack/local/pillar/elasticsearch/soc_elasticsearch.sls elasticsearch.managed_integrations
+  fi
+
+  # Remove so-rule-update script left behind by the idstools removal in 2.4.200
+  rm -f /usr/sbin/so-rule-update
+  
   POSTVERSION=2.4.210
 }
 
@@ -988,7 +1003,9 @@ up_to_2.4.210() {
   # Elastic Update for this release, so download Elastic Agent files
   determine_elastic_agent_upgrade
   create_ca_pillar
-
+  # This state is used to deal with the breaking change introduced in 3006.17 - https://docs.saltproject.io/en/3006/topics/releases/3006.17.html
+  # This is the only way the state is called so we can use concurrent=True
+  salt-call state.apply salt.master.add_minimum_auth_version --file-root=$UPDATE_DIR/salt --local concurrent=True
   INSTALLEDVERSION=2.4.210
 }
 
@@ -1036,7 +1053,7 @@ used and enables informed prioritization of future development.
 
 Adjust this setting at anytime via the SOC Configuration screen.
 
-Documentation: https://docs.securityonion.net/en/2.4/telemetry.html
+Documentation: https://securityonion.net/docs/telemetry
 
 ASSIST_EOF
 
@@ -1184,7 +1201,7 @@ suricata_idstools_removal_pre() {
 install -d -o 939 -g 939 -m 755 /opt/so/conf/soc/fingerprints
 install -o 939 -g 939 -m 644 /dev/null /opt/so/conf/soc/fingerprints/suricataengine.syncBlock
 cat > /opt/so/conf/soc/fingerprints/suricataengine.syncBlock << EOF
-Suricata ruleset sync is blocked until this file is removed. **CRITICAL** Make sure that you have manually added any custom Suricata rulesets via SOC config before removing this file - review the documentation for more details: https://docs.securityonion.net/en/2.4/nids.html#sync-block
+Suricata ruleset sync is blocked until this file is removed. **CRITICAL** Make sure that you have manually added any custom Suricata rulesets via SOC config before removing this file - review the documentation for more details: https://securityonion.net/docs/nids
 EOF
 
 # Remove possible symlink & create salt local rules dir
@@ -1750,7 +1767,7 @@ verify_es_version_compatibility() {
         fi
 
         echo -e "\n##############################################################################################################################\n"
-        echo "A previously required intermediate Elasticsearch upgrade was detected. Verifying that all Searchnodes/Heavynodes have successfully upgraded Elasticsearch to $es_required_version_statefile_value before proceeding with soup to avoid potential data loss!"
+        echo "A previously required intermediate Elasticsearch upgrade was detected. Verifying that all Searchnodes/Heavynodes have successfully upgraded Elasticsearch to $es_required_version_statefile_value before proceeding with soup to avoid potential data loss! This command can take up to an hour to complete."
         timeout --foreground 4000 bash "$es_verification_script" "$es_required_version_statefile_value" "$statefile"
         if [[ $? -ne 0 ]]; then
             echo -e "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
@@ -1806,6 +1823,25 @@ verify_es_version_compatibility() {
 	    fi
     fi
 
+}
+
+wait_for_salt_minion_with_restart() {
+    local minion="$1"
+    local max_wait="${2:-60}"
+    local interval="${3:-3}"
+    local logfile="$4"
+    
+    wait_for_salt_minion "$minion" "$max_wait" "$interval" "$logfile"
+    local result=$?
+    
+    if [[ $result -ne 0 ]]; then
+        echo "$(date '+%a %d %b %Y %H:%M:%S.%6N') - salt-minion not ready, attempting restart..."
+        systemctl_func "restart" "salt-minion"
+        wait_for_salt_minion "$minion" "$max_wait" "$interval" "$logfile"
+        result=$?
+    fi
+    
+    return $result
 }
 
 run_airgap_intermediate_upgrade() {
@@ -2058,7 +2094,7 @@ apply_hotfix() {
       mv /etc/pki/managerssl.crt /etc/pki/managerssl.crt.old
       mv /etc/pki/managerssl.key /etc/pki/managerssl.key.old
       systemctl_func "start" "salt-minion"
-      (wait_for_salt_minion "$MINIONID" "120" "4" "$SOUP_LOG" || fail "Salt minion was not running or ready.") 2>&1 | tee -a "$SOUP_LOG"
+       wait_for_salt_minion_with_restart "$MINIONID" "60" "3" "$SOUP_LOG" || fail "Salt minion was not running or ready."
     fi
   else
    echo "No actions required. ($INSTALLEDVERSION/$HOTFIXVERSION)"
@@ -2180,7 +2216,7 @@ main() {
     else
       update_registry
       set +e
-      update_docker_containers 'soup' '' '' '/dev/stdout' 2>&1 | tee -a "$SOUP_LOG"
+      update_docker_containers 'soup' '' '' '/dev/stdout' 2>&1
       set -e
     fi
 
@@ -2258,7 +2294,7 @@ main() {
     echo ""
     echo "Running a highstate. This could take several minutes."
     set +e
-    (wait_for_salt_minion "$MINIONID" "120" "4" "$SOUP_LOG" || fail "Salt minion was not running or ready.") 2>&1 | tee -a "$SOUP_LOG"
+    wait_for_salt_minion_with_restart "$MINIONID" "60" "3" "$SOUP_LOG" || fail "Salt minion was not running or ready."
     highstate
     set -e
 
@@ -2271,10 +2307,15 @@ main() {
     check_saltmaster_status
 
     echo "Running a highstate to complete the Security Onion upgrade on this manager. This could take several minutes."
-    (wait_for_salt_minion "$MINIONID" "120" "4" "$SOUP_LOG" || fail "Salt minion was not running or ready.") 2>&1 | tee -a "$SOUP_LOG"
+    wait_for_salt_minion_with_restart "$MINIONID" "60" "3" "$SOUP_LOG" || fail "Salt minion was not running or ready."
 
     # Stop long-running scripts to allow potentially updated scripts to load on the next execution.
-    killall salt-relay.sh
+    if pgrep salt-relay.sh > /dev/null 2>&1; then
+        echo "Stopping salt-relay.sh"
+        killall salt-relay.sh
+    else
+        echo "salt-relay.sh is not running"
+    fi
 
     # ensure the mine is updated and populated before highstates run, following the salt-master restart
     update_salt_mine
@@ -2337,7 +2378,7 @@ Each minion is on a random 15 minute check-in period and things like network ban
 
 If it looks like you’re missing data after the upgrade, please avoid restarting services and instead make sure at least one search node has completed its upgrade. The best way to do this is to run 'sudo salt-call state.highstate' from a search node and make sure there are no errors. Typically if it works on one node it will work on the rest. Sensor nodes are less complex and will update as they check in so you can monitor those from the Grid section of SOC.
 
-For more information, please see $DOC_BASE_URL/soup.html#distributed-deployments.
+For more information, please see $DOC_BASE_URL/soup#distributed-deployments.
 
 EOF
 
@@ -2351,7 +2392,7 @@ EOF
 
 A custom Elasticsearch configuration has been found at /opt/so/saltstack/local/elasticsearch/files/elasticsearch.yml. This file is no longer referenced in Security Onion versions >= 2.3.80.
 
-If you still need those customizations, you'll need to manually migrate them to the new Elasticsearch config as shown at $DOC_BASE_URL/elasticsearch.html.
+If you still need those customizations, you'll need to manually migrate them to the new Elasticsearch config as shown at $DOC_BASE_URL/elasticsearch.
 
 EOF
 
@@ -2412,7 +2453,7 @@ if [[ -z $UNATTENDED ]]; then
 SOUP - Security Onion UPdater
 
 Please review the following for more information about the update process and recent updates:
-$DOC_BASE_URL/soup.html
+$DOC_BASE_URL/soup
 https://blog.securityonion.net
 
 WARNING: If you run soup via an SSH session and that SSH session terminates, then any processes running in that session would terminate. You should avoid leaving soup unattended especially if the machine you are SSHing from is configured to sleep after a period of time. You might also consider using something like screen or tmux so that if your SSH session terminates, the processes will continue running on the server.
